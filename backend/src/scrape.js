@@ -99,6 +99,13 @@ const saturation = ([r, g, b]) => {
   return delta / (1 - Math.abs(2 * lightness - 1));
 };
 
+const lightness = ([r, g, b]) => {
+  const red = r / 255;
+  const green = g / 255;
+  const blue = b / 255;
+  return (Math.max(red, green, blue) + Math.min(red, green, blue)) / 2;
+};
+
 const isNeutralColor = (rgb) => {
   const hex = toHex(rgb);
   if (NEUTRAL_HEX.has(hex)) {
@@ -147,16 +154,65 @@ const addCandidate = (scoreMap, value, source, baseScore) => {
   scoreMap.set(hex, entry);
 };
 
+const addScoredCandidate = (scoreMap, value, source, baseScore, context = {}) => {
+  const rgb = Array.isArray(value) ? value : parseColor(value);
+  if (!rgb) {
+    return;
+  }
+
+  const sat = saturation(rgb);
+  const lit = lightness(rgb);
+  let score = baseScore;
+
+  if (sat < 0.2) {
+    score -= 6;
+  }
+
+  if (lit > 0.85) {
+    score -= 6;
+  }
+
+  if (lit < 0.1) {
+    score -= 6;
+  }
+
+  if (sat > 0.5 && lit >= 0.2 && lit <= 0.6) {
+    score += 5;
+  }
+
+  if (context.isBackground) {
+    score -= 4;
+  }
+
+  if (context.isHeroSection) {
+    score += 6;
+  }
+
+  if (context.isLargeContainer) {
+    score += 4;
+  }
+
+  addCandidate(scoreMap, rgb, source, score);
+};
+
 const finalizeCandidates = (scoreMap) =>
   [...scoreMap.values()]
     .map((entry) => {
+      const sat = saturation(entry.rgb);
+      const lit = lightness(entry.rgb);
       const score =
         entry.score +
         Math.min(entry.frequency, 3) * 2 +
+        (sat < 0.2 ? -6 : 0) +
+        (lit > 0.85 ? -6 : 0) +
+        (lit < 0.1 ? -6 : 0) +
+        (sat > 0.5 && lit >= 0.2 && lit <= 0.6 ? 5 : 0) +
         (isNeutralColor(entry.rgb) ? -10 : 0);
 
       return {
         ...entry,
+        saturation: sat,
+        lightness: lit,
         score,
       };
     })
@@ -172,9 +228,25 @@ const chooseBackground = (backgrounds) => {
 };
 
 const choosePrimary = (candidates, backgroundRgb) => {
+  const forced = candidates.find(
+    (candidate) =>
+      candidate.saturation > 0.4 &&
+      candidate.lightness >= 0.2 &&
+      candidate.lightness <= 0.6 &&
+      !isNeutralColor(candidate.rgb) &&
+      candidate.sources.has("visible-section"),
+  );
+
+  if (forced) {
+    return forced;
+  }
+
   const fallback = candidates.find(
     (candidate) =>
-      !isNeutralColor(candidate.rgb) && colorDistance(candidate.rgb, backgroundRgb) > 40,
+      !isNeutralColor(candidate.rgb) &&
+      candidate.lightness <= 0.85 &&
+      candidate.lightness >= 0.1 &&
+      colorDistance(candidate.rgb, backgroundRgb) > 40,
   );
 
   return fallback ?? null;
@@ -188,6 +260,9 @@ const chooseSecondary = (candidates, primaryRgb, backgroundRgb) => {
       }
 
       return (
+        candidate.saturation >= 0.2 &&
+        candidate.lightness <= 0.85 &&
+        candidate.lightness >= 0.1 &&
         colorDistance(candidate.rgb, primaryRgb) > 45 &&
         colorDistance(candidate.rgb, backgroundRgb) > 30
       );
@@ -218,8 +293,10 @@ const chooseRefinedPrimary = (candidates, currentPrimaryHex, backgroundRgb) => {
     const closeEnoughScore = candidate.score >= baseline.score - 3;
     const moreSaturated = saturation(candidate.rgb) > saturation(baseline.rgb) + 0.08;
     const farFromBackground = colorDistance(candidate.rgb, backgroundRgb) > 40;
+    const balancedLightness =
+      candidate.lightness >= 0.2 && candidate.lightness <= 0.6;
 
-    return strongSource && closeEnoughScore && moreSaturated && farFromBackground;
+    return strongSource && closeEnoughScore && moreSaturated && farFromBackground && balancedLightness;
   });
 
   return alternative ?? baseline ?? choosePrimary(candidates, backgroundRgb);
@@ -235,16 +312,25 @@ const isFallbackTokenSet = (tokens) =>
 
 const scoreHtmlCandidates = (html) => {
   const scoreMap = new Map();
-  const add = (value, source, score) => addCandidate(scoreMap, value, source, score);
+  const add = (value, source, score, context = {}) =>
+    addScoredCandidate(scoreMap, value, source, score, context);
 
   [...html.matchAll(/theme-color["'][^>]*content=["']([^"']+)["']/gi)].forEach((match) =>
     add(match[1], "meta-theme", 7),
   );
-  [...html.matchAll(/(?:background|color)\s*:\s*(#[0-9a-f]{3,6}|rgba?\([^)]+\))/gi)].forEach(
-    (match) => add(match[1], "inline-style", 5),
+  [...html.matchAll(/background-color\s*:\s*(#[0-9a-f]{3,6}|rgba?\([^)]+\))/gi)].forEach(
+    (match) => add(match[1], "inline-style", 5, { isBackground: true }),
+  );
+  [...html.matchAll(/color\s*:\s*(#[0-9a-f]{3,6}|rgba?\([^)]+\))/gi)].forEach((match) =>
+    add(match[1], "inline-style", 3),
   );
   [...html.matchAll(/#[0-9a-f]{6}|#[0-9a-f]{3}/gi)].forEach((match) =>
     add(match[0], "markup-frequency", 2),
+  );
+  [...html.matchAll(
+    /(?:background-color|background)\s*:\s*(#[0-9a-f]{3,6}|rgba?\([^)]+\))[^;>]*(?:hero|banner|header|masthead)/gi,
+  )].forEach((match) =>
+    add(match[1], "html-hero", 6, { isHeroSection: true, isBackground: true }),
   );
 
   return finalizeCandidates(scoreMap);
@@ -273,11 +359,17 @@ const extractTokensFromHtmlFetch = async (url, options = {}) => {
   const html = await response.text();
   const candidates = scoreHtmlCandidates(html);
   const currentPrimaryHex = sanitizeTokens(options.currentTokens ?? fallbackTokens).colors.primary;
-  const lightCandidate = candidates.find((candidate) => luminance(candidate.rgb) > 0.72);
+  const lightCandidate = candidates.find(
+    (candidate) => candidate.lightness > 0.72 || luminance(candidate.rgb) > 0.72,
+  );
   const backgroundRgb = lightCandidate?.rgb ?? [245, 245, 245];
   const usableCandidates = candidates.filter(
     (candidate) =>
-      !isNeutralColor(candidate.rgb) && colorDistance(candidate.rgb, backgroundRgb) > 35,
+      !isNeutralColor(candidate.rgb) &&
+      candidate.saturation >= 0.2 &&
+      candidate.lightness <= 0.85 &&
+      candidate.lightness >= 0.1 &&
+      colorDistance(candidate.rgb, backgroundRgb) > 35,
   );
   const primaryCandidate = options.refine
     ? chooseRefinedPrimary(usableCandidates, currentPrimaryHex, backgroundRgb)
@@ -470,16 +562,29 @@ export const extractTokensFromUrl = async (url, options = {}) => {
 
     const scoreMap = new Map();
 
-    extracted.cssVariables.forEach((color) => addCandidate(scoreMap, color, "css-variable", 7));
+    extracted.cssVariables.forEach((color) =>
+      addScoredCandidate(scoreMap, color, "css-variable", 7),
+    );
     extracted.visibleSectionColors.forEach((color) =>
-      addCandidate(scoreMap, color, "visible-section", 5),
+      addScoredCandidate(scoreMap, color, "visible-section", 5, {
+        isHeroSection: true,
+      }),
     );
     extracted.frequentColors.forEach((color) =>
-      addCandidate(scoreMap, color, "computed-style", 1),
+      addScoredCandidate(scoreMap, color, "computed-style", 1),
+    );
+    extracted.sectionBackgrounds.forEach((color) =>
+      addScoredCandidate(scoreMap, color, "section-background", 2, {
+        isBackground: true,
+        isHeroSection: true,
+        isLargeContainer: true,
+      }),
     );
 
     const imagePalette = await extractImageAccent(page, extracted.largestImage);
-    imagePalette.forEach((rgb) => addCandidate(scoreMap, rgb, "image", 4));
+    imagePalette.forEach((rgb) =>
+      addScoredCandidate(scoreMap, rgb, "image", 4, { isLargeContainer: true }),
+    );
 
     const backgroundRgb = chooseBackground([
       extracted.bodyBackground,
