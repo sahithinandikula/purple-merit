@@ -9,13 +9,28 @@ import { hasSupabase, supabase } from "./supabase.js";
 const app = express();
 const port = process.env.PORT || 4000;
 const inMemoryTokens = new Map();
+const allowedOrigins =
+  process.env.FRONTEND_URL?.split(",").map((origin) => origin.trim()).filter(Boolean) ?? [];
 
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL?.split(",") ?? "*",
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.length === 0 || process.env.VERCEL === "1") {
+        return callback(null, true);
+      }
+
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(null, false);
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type"],
   }),
 );
 app.use(express.json());
+app.options("*", cors());
 
 const isValidUrl = (value) => {
   try {
