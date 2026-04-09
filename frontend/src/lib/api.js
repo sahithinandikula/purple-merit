@@ -1,5 +1,6 @@
-const apiBaseUrl =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+const apiBaseUrl = (
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000"
+).trim().replace(/\/$/, "");
 
 export const scrapeTokens = async (url, options = {}) => {
   const response = await fetch(`${apiBaseUrl}/scrape`, {
