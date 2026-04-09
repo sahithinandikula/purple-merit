@@ -123,12 +123,30 @@ Retrieves a saved token payload from Supabase.
 
 ## Deployment Notes
 
+## Zero-Cost Deployment Plan
+
+Use only free tiers:
+
+- Frontend: Vercel Hobby
+- Backend: Render Free Web Service
+- Database: Supabase Free Plan
+
+To avoid unexpected charges in the future:
+
+- Do not upgrade any service from its free tier
+- Do not enable paid add-ons
+- Keep Supabase on a separate Free organization if you want strict cost isolation
+- If any platform prompts for optional paid analytics, monitoring, or extra environments, skip them
+- Render free services can spin down on idle, so the first backend request may be slow
+- Supabase free projects can be paused when inactive, so persistence may sleep if unused for a long time
+
 ### Frontend on Vercel
 
 - Root directory: `frontend`
 - Build command: `npm run build`
 - Output directory: `dist`
 - Environment variable: `VITE_API_BASE_URL=https://your-render-backend.onrender.com`
+- `frontend/vercel.json` is included for Vite SPA deployment
 
 ### Backend on Render
 
@@ -136,6 +154,43 @@ Retrieves a saved token payload from Supabase.
 - Build command: `npm install`
 - Start command: `npm start`
 - Add all backend environment variables in the Render dashboard
+- `render.yaml` is included and pins the backend to the Render `free` plan
+
+## Exact Deployment Steps
+
+### 1. Deploy the backend on Render
+
+1. Push this repo to GitHub.
+2. In Render, create a new Web Service from the GitHub repo.
+3. Select the `backend` root directory.
+4. Choose the `Free` instance type.
+5. Set these environment variables:
+
+```env
+FRONTEND_URL=https://your-vercel-app.vercel.app
+SUPABASE_URL=your-supabase-project-url
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+```
+
+6. Deploy and copy the Render URL.
+
+### 2. Deploy the frontend on Vercel
+
+1. Import the same GitHub repo into Vercel.
+2. Set the root directory to `frontend`.
+3. Add:
+
+```env
+VITE_API_BASE_URL=https://your-render-backend.onrender.com
+```
+
+4. Deploy the project.
+
+### 3. Optional Supabase setup
+
+1. Create a free Supabase project.
+2. Run the SQL schema in the `Supabase Schema` section above.
+3. Copy the project URL and service role key into Render.
 
 ## Demo Checklist
 
