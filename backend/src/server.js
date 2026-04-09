@@ -26,6 +26,14 @@ const isValidUrl = (value) => {
   }
 };
 
+app.get("/", (_, res) => {
+  res.json({
+    name: "StyleSync Backend",
+    ok: true,
+    endpoints: ["/health", "/scrape", "/tokens/:id"],
+  });
+});
+
 app.get("/health", (_, res) => {
   res.json({ ok: true });
 });
@@ -107,6 +115,10 @@ app.get("/tokens/:id", async (req, res) => {
   return res.json(data);
 });
 
-app.listen(port, () => {
-  console.log(`StyleSync backend running on port ${port}`);
-});
+if (process.env.VERCEL !== "1") {
+  app.listen(port, () => {
+    console.log(`StyleSync backend running on port ${port}`);
+  });
+}
+
+export default app;
