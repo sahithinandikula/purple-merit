@@ -227,6 +227,80 @@ const chooseRefinedPrimary = (candidates, currentPrimaryHex, backgroundRgb) => {
 
 const normalizeBucketChannel = (value) => clamp(Math.round(value / 32) * 32, 0, 255);
 
+const isFallbackTokenSet = (tokens) =>
+  tokens.colors.primary === fallbackTokens.colors.primary &&
+  tokens.colors.secondary === fallbackTokens.colors.secondary &&
+  tokens.colors.background === fallbackTokens.colors.background &&
+  tokens.typography.fontFamily === fallbackTokens.typography.fontFamily;
+
+const scoreHtmlCandidates = (html) => {
+  const scoreMap = new Map();
+  const add = (value, source, score) => addCandidate(scoreMap, value, source, score);
+
+  [...html.matchAll(/theme-color["'][^>]*content=["']([^"']+)["']/gi)].forEach((match) =>
+    add(match[1], "meta-theme", 7),
+  );
+  [...html.matchAll(/(?:background|color)\s*:\s*(#[0-9a-f]{3,6}|rgba?\([^)]+\))/gi)].forEach(
+    (match) => add(match[1], "inline-style", 5),
+  );
+  [...html.matchAll(/#[0-9a-f]{6}|#[0-9a-f]{3}/gi)].forEach((match) =>
+    add(match[0], "markup-frequency", 2),
+  );
+
+  return finalizeCandidates(scoreMap);
+};
+
+const extractTypographyFromHtml = (html) => {
+  const fontMatch =
+    html.match(/font-family\s*:\s*([^;}"']+)/i) ??
+    html.match(/font-family:["']([^"']+)["']/i);
+  const sizeMatch = html.match(/font-size\s*:\s*(\d+px)/i);
+
+  return {
+    fontFamily: fontMatch?.[1]?.trim() || fallbackTokens.typography.fontFamily,
+    baseSize: sizeMatch?.[1]?.trim() || fallbackTokens.typography.baseSize,
+  };
+};
+
+const extractTokensFromHtmlFetch = async (url, options = {}) => {
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
+    },
+  });
+
+  const html = await response.text();
+  const candidates = scoreHtmlCandidates(html);
+  const currentPrimaryHex = sanitizeTokens(options.currentTokens ?? fallbackTokens).colors.primary;
+  const lightCandidate = candidates.find((candidate) => luminance(candidate.rgb) > 0.72);
+  const backgroundRgb = lightCandidate?.rgb ?? [245, 245, 245];
+  const usableCandidates = candidates.filter(
+    (candidate) =>
+      !isNeutralColor(candidate.rgb) && colorDistance(candidate.rgb, backgroundRgb) > 35,
+  );
+  const primaryCandidate = options.refine
+    ? chooseRefinedPrimary(usableCandidates, currentPrimaryHex, backgroundRgb)
+    : choosePrimary(usableCandidates, backgroundRgb);
+  const secondaryCandidate = chooseSecondary(
+    usableCandidates,
+    primaryCandidate?.rgb ?? [17, 17, 17],
+    backgroundRgb,
+  );
+  const typography = extractTypographyFromHtml(html);
+
+  return sanitizeTokens({
+    colors: {
+      primary: primaryCandidate?.hex ?? fallbackTokens.colors.primary,
+      secondary:
+        secondaryCandidate?.hex ??
+        (luminance(backgroundRgb) > 0.65 ? "#111111" : fallbackTokens.colors.secondary),
+      background: toHex(backgroundRgb),
+    },
+    typography,
+  });
+};
+
 const extractImageAccent = async (page, largestImage) => {
   if (!largestImage) {
     return [];
@@ -276,6 +350,7 @@ const extractImageAccent = async (page, largestImage) => {
 
 export const extractTokensFromUrl = async (url, options = {}) => {
   let browser;
+  let browserResult = fallbackTokens;
 
   try {
     browser = await puppeteer.launch({
@@ -456,12 +531,22 @@ export const extractTokensFromUrl = async (url, options = {}) => {
       }
     }
 
-    return refinedColors;
+    browserResult = refinedColors;
   } catch (error) {
-    return fallbackTokens;
   } finally {
     if (browser) {
       await browser.close();
     }
+  }
+
+  if (!isFallbackTokenSet(browserResult)) {
+    return browserResult;
+  }
+
+  try {
+    const htmlResult = await extractTokensFromHtmlFetch(url, options);
+    return isFallbackTokenSet(htmlResult) ? fallbackTokens : htmlResult;
+  } catch (error) {
+    return fallbackTokens;
   }
 };
